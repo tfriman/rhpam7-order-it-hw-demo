@@ -310,6 +310,7 @@ function import_secrets_and_service_account() {
 
   oc create serviceaccount businesscentral-service-account
   oc create serviceaccount kieserver-service-account
+  sleep 3;
   oc secrets link --for=mount businesscentral-service-account businesscentral-app-secret
   oc secrets link --for=mount kieserver-service-account kieserver-app-secret
 }
@@ -326,19 +327,14 @@ function create_application() {
   oc process -f $SCRIPT_DIR/rhpam$PAM7_VERSION-businesscentral-openshift-with-users.yaml -p DOCKERFILE_REPOSITORY="https://github.com/jbossdemocentral/rhpam7-order-it-hw-demo" -p DOCKERFILE_REF="master" -p DOCKERFILE_CONTEXT="support/openshift/rhpam7-businesscentral-openshift-with-users" -n ${PRJ[0]} | oc create -n ${PRJ[0]} -f -
 
   oc create configmap setup-demo-scripts --from-file=$SCRIPT_DIR/bc-clone-git-repository.sh,$SCRIPT_DIR/provision-properties-static.sh
+  oc create secret generic rhpam-credentials --from-literal=KIE_ADMIN_USER=$KIE_ADMIN_USER --from-literal=KIE_ADMIN_PWD=$KIE_ADMIN_PWD
 
   oc new-app --template=rhpam$PAM7_VERSION-authoring \
-  -p APPLICATION_NAME="$ARG_DEMO" \
+	    --as-deployment-config=true \
+	    -p APPLICATION_NAME="$ARG_DEMO" \
   -p IMAGE_STREAM_NAMESPACE="$IMAGE_STREAM_NAMESPACE" \
   -p IMAGE_STREAM_TAG="$IMAGE_STREAM_TAG" \
-  -p KIE_ADMIN_USER="$KIE_ADMIN_USER" \
-  -p KIE_ADMIN_PWD="$KIE_ADMIN_PWD" \
-  -p KIE_SERVER_CONTROLLER_USER="$KIE_SERVER_CONTROLLER_USER" \
-  -p KIE_SERVER_CONTROLLER_PWD="$KIE_SERVER_CONTROLLER_PWD" \
-  -p KIE_SERVER_USER="$KIE_SERVER_USER" \
-  -p KIE_SERVER_PWD="$KIE_SERVER_PWD" \
-  -p BUSINESS_CENTRAL_MAVEN_USERNAME="mavenUser" \
-  -p BUSINESS_CENTRAL_MAVEN_PASSWORD="test1234!" \
+  -p CREDENTIALS_SECRET="rhpam-credentials" \
   -p BUSINESS_CENTRAL_HTTPS_SECRET="businesscentral-app-secret" \
   -p KIE_SERVER_HTTPS_SECRET="kieserver-app-secret" \
   -p BUSINESS_CENTRAL_MEMORY_LIMIT="2Gi"
@@ -356,18 +352,19 @@ function create_application() {
   oc patch dc/$ARG_DEMO-rhpamcentr --type='json' -p "[{'op': 'replace', 'path': '/spec/triggers/0/imageChangeParams/from/name', 'value': 'rhpam$PAM7_VERSION-businesscentral-openshift-with-users:latest'}]"
 
   oc new-app java:8~https://github.com/jbossdemocentral/rhpam7-order-it-hw-demo-springboot-app \
-              --name rhpam7-oih-order-app \
-              -e JAVA_OPTIONS="-Dorg.kie.server.repo=/data -Dorg.jbpm.document.storage=/data/docs -Dorder.service.location=http://rhpam7-oih-order-mgmt-app:8080 -Dorg.kie.server.controller.user=controllerUser -Dorg.kie.server.controller.pwd=test1234! -Dspring.profiles.active=openshift-rhpam" \
-              -e KIE_MAVEN_REPO_USER=mavenUser \
-              -e KIE_MAVEN_REPO_PASSWORD=test1234! \
-              -e KIE_MAVEN_REPO=http://$ARG_DEMO-rhpamcentr:8080/maven2 \
-              -e GC_MAX_METASPACE_SIZE=192
-
+	    --as-deployment-config=true \
+	    --name rhpam7-oih-order-app \
+	      -e JAVA_OPTIONS="-Dorg.kie.server.repo=/data -Dorg.jbpm.document.storage=/data/docs -Dorder.service.location=http://rhpam7-oih-order-mgmt-app:8080 -Dorg.kie.server.controller.user=controllerUser -Dorg.kie.server.controller.pwd=test1234! -Dspring.profiles.active=openshift-rhpam" \
+	      -e KIE_MAVEN_REPO_USER=mavenUser \
+	      -e KIE_MAVEN_REPO_PASSWORD=test1234! \
+	      -e KIE_MAVEN_REPO=http://$ARG_DEMO-rhpamcentr:8080/maven2 \
+	      -e GC_MAX_METASPACE_SIZE=192
+  # oc start-build rhpam7-oih-order-app
   oc create configmap rhpam7-oih-order-app-settings-config-map --from-file=$SCRIPT_DIR/settings.xml -n ${PRJ[0]}
 
-  oc set volume dc/rhpam7-oih-order-app --add -m /home/jboss/.m2 -t configmap --configmap-name=rhpam7-oih-order-app-settings-config-map -n ${PRJ[0]}
+  oc set volume deploymentconfig/rhpam7-oih-order-app --add -m /home/jboss/.m2 -t configmap --configmap-name=rhpam7-oih-order-app-settings-config-map -n ${PRJ[0]}
 
-  oc set volume dc/rhpam7-oih-order-app --add --claim-size 100Mi --mount-path /data --name rhpam7-oih-order-app-data -n ${PRJ[0]}
+  oc set volume deploymentconfig/rhpam7-oih-order-app --add --claim-size 100Mi --mount-path /data --name rhpam7-oih-order-app-data -n ${PRJ[0]}
 
   oc expose service rhpam7-oih-order-app -n ${PRJ[0]}
 
@@ -376,13 +373,14 @@ function create_application() {
 
   oc create configmap rhpam7-oih-order-app-properties-config-map --from-file=$SCRIPT_DIR/application-openshift-rhpam.properties -n ${PRJ[0]}
 
-  oc set volume dc/rhpam7-oih-order-app --add -m /deployments/config -t configmap --configmap-name=rhpam7-oih-order-app-properties-config-map -n ${PRJ[0]}
+  oc set volume deploymentconfig/rhpam7-oih-order-app --add -m /deployments/config -t configmap --configmap-name=rhpam7-oih-order-app-properties-config-map -n ${PRJ[0]}
 
   oc new-app java:8~https://github.com/jbossdemocentral/rhpam7-order-it-hw-demo-vertx-app \
-            --name rhpam7-oih-order-mgmt-app \
-            -e JAVA_OPTIONS='-Duser=maciek -Dpassword=maciek1!' \
-            -e JAVA_APP_JAR=order-mgmt-app-1.0.0-fat.jar
-
+	    --as-deployment-config=true \
+	    --name rhpam7-oih-order-mgmt-app \
+	    -e JAVA_OPTIONS='-Duser=maciek -Dpassword=maciek1!' \
+	    -e JAVA_APP_JAR=order-mgmt-app-1.0.0-fat.jar
+  #oc start-build rhpam7-oih-order-mgmt-app
   oc expose service rhpam7-oih-order-mgmt-app -n ${PRJ[0]}
 
 }
